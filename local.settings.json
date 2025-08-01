@@ -1,0 +1,11 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "OpenAIEndpoint": "https://openai-seq-jslkadjada8sd9-test.openai.azure.com/",
+    "OpenAIKey": "7a25b06c310e42b3bb9b00ad06413f57",
+    "OpenAIDeploymentName": "seq4o",
+    "SqlConnectionString": "Server=tcp:sqls-skyralytics-app-prd-useast-9vtiu10m2023ezn.database.windows.net,1433;Initial Catalog=sqldb-skyra-bluebird-prd-useast-uoas8duo;Persist Security Info=False;User ID=supremeaireader;Password=1zIpBM2Q0,T[6Xy(gA^-;MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+  }
+}
