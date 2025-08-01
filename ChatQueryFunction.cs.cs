@@ -29,7 +29,6 @@ public class ChatQueryFunction
         var body = await new StreamReader(req.Body).ReadToEndAsync();
         var data = JsonSerializer.Deserialize<Dictionary<string, string>>(body);
         string userMessage = data?["message"] ?? "No message provided";
-
         Console.WriteLine($"[DEBUG] Incoming question: {userMessage}");
 
         // Step 1: Generate SQL
@@ -48,38 +47,51 @@ public class ChatQueryFunction
             results = await ExecuteSql(sqlQuery);
         }
 
-        // Step 4: Generate human-readable answer
-        string naturalResponse = await GenerateAnswer(userMessage, results);
+        // Step 4: Generate natural language answer + chart type
+        var (naturalResponse, chartType) = await GenerateAnswerWithChart(userMessage, results);
+
+        // Step 5: Extract SalesRepId from SQL or question
+        string salesRepId = ExtractSalesRepId(sqlQuery, userMessage);
 
         // Respond
         var response = req.CreateResponse(HttpStatusCode.OK);
         await response.WriteAsJsonAsync(new
         {
             query = sqlQuery,
+            salesrep_id = salesRepId,
             answer = naturalResponse,
-            data = results
+            data = results,
+            chart_type = chartType
         });
 
         return response;
     }
 
-    // === Load Schema from file ===
-    private string LoadSchema()
+    // === Helper to Load Files ===
+    private string LoadFile(string fileName)
     {
-        string schemaPath = Path.Combine(AppContext.BaseDirectory, "schema.sql");
-        if (!File.Exists(schemaPath))
+        string path = Path.Combine(AppContext.BaseDirectory, fileName);
+        if (!File.Exists(path))
         {
-            Console.WriteLine($"[ERROR] Schema file not found at {schemaPath}");
+            Console.WriteLine($"[ERROR] File not found: {fileName}");
             return string.Empty;
         }
-        return File.ReadAllText(schemaPath);
+        return File.ReadAllText(path);
     }
 
-    // === Generate SQL from user question ===
+    // === Generate SQL from user question with strict rules ===
     private async Task<string> GenerateSqlFromQuestion(string question)
     {
         var client = new OpenAIClient(new Uri(_openAIEndpoint), new AzureKeyCredential(_openAIKey));
-        string schemaText = LoadSchema(); // Load schema into system prompt
+
+        string schemaText = LoadFile("schema.sql");
+        string instructionsText = LoadFile("instructions.txt");
+        string samplesText = LoadFile("sample_queries.txt");
+
+        string systemPrompt =
+            $"{instructionsText}\n\n" +
+            $"Here is the database schema:\n```sql\n{schemaText}\n```\n\n" +
+            $"Here are example queries:\n```sql\n{samplesText}\n```";
 
         var chatOptions = new ChatCompletionsOptions
         {
@@ -87,22 +99,32 @@ public class ChatQueryFunction
             DeploymentName = _deploymentName,
             Messages =
             {
-                new ChatRequestSystemMessage(
-                    $"You are an AI that converts user questions into valid T-SQL queries for the BlueBird database. " +
-                    $"Use ONLY the exact table and column names from this schema:\n\n{schemaText}\n\n" +
-                    $"Rules:\n" +
-                    $"- Do not pluralize table names.\n" +
-                    $"- Do not use backticks or MySQL syntax.\n" +
-                    $"- Use schema prefix 'BlueBird.' for all tables.\n"
-                ),
+                new ChatRequestSystemMessage(systemPrompt),
                 new ChatRequestUserMessage(question)
             }
         };
 
         var response = await client.GetChatCompletionsAsync(chatOptions);
+        var raw = response.Value.Choices[0].Message.Content ?? "";
 
-        var sql = response.Value.Choices[0].Message.Content ?? "";
-        return sql.Trim();
+        // Remove code fences if present
+        raw = raw.Replace("```json", "").Replace("```", "").Trim();
+
+        // Parse JSON to extract "query" field (if JSON is returned)
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.TryGetProperty("query", out var queryProp))
+            {
+                return queryProp.GetString() ?? "NA";
+            }
+        }
+        catch
+        {
+            Console.WriteLine("[WARN] Failed to parse JSON; falling back to raw content");
+        }
+
+        return raw.Trim();
     }
 
     // === Clean AI SQL (remove junk, enforce schema) ===
@@ -133,11 +155,9 @@ public class ChatQueryFunction
     // === Prefix BlueBird schema if missing (prevent duplicates) ===
     private string AddSchemaPrefix(string sql)
     {
-        string[] tables = { "Account", "SalesRep", "Territory", "Event", "Organization" };
-
+        string[] tables = { "Account", "SalesRep", "Territory", "Event", "Organization", "AccountAddress" };
         foreach (var table in tables)
         {
-            // Add prefix only if not already present
             sql = System.Text.RegularExpressions.Regex.Replace(
                 sql,
                 $@"(?<!BlueBird\.)\b{table}\b",
@@ -145,7 +165,6 @@ public class ChatQueryFunction
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase
             );
         }
-
         return sql;
     }
 
@@ -153,7 +172,6 @@ public class ChatQueryFunction
     private async Task<List<Dictionary<string, object>>> ExecuteSql(string sqlQuery)
     {
         var results = new List<Dictionary<string, object>>();
-
         try
         {
             using (var connection = new SqlConnection(_sqlConnectionString))
@@ -176,12 +194,27 @@ public class ChatQueryFunction
         {
             Console.WriteLine($"[ERROR] SQL Execution Failed: {ex.Message}");
         }
-
         return results;
     }
 
-    // === Summarize data in natural language ===
-    private async Task<string> GenerateAnswer(string question, List<Dictionary<string, object>> data)
+    // === Extract SalesRepId from SQL or fallback to user message ===
+    private string ExtractSalesRepId(string sqlQuery, string userMessage)
+    {
+        // Check SQL query
+        var match = System.Text.RegularExpressions.Regex.Match(sqlQuery, @"SalesRepId\s*=\s*(\d+)");
+        if (match.Success)
+            return match.Groups[1].Value;
+
+        // Fallback: Check user message
+        match = System.Text.RegularExpressions.Regex.Match(userMessage, @"salesrepid\s*=?\s*(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (match.Success)
+            return match.Groups[1].Value;
+
+        return "unknown";
+    }
+
+    // === Summarize data in natural language AND suggest chart type ===
+    private async Task<(string answer, string chartType)> GenerateAnswerWithChart(string question, List<Dictionary<string, object>> data)
     {
         var client = new OpenAIClient(new Uri(_openAIEndpoint), new AzureKeyCredential(_openAIKey));
         string jsonData = JsonSerializer.Serialize(data);
@@ -192,12 +225,35 @@ public class ChatQueryFunction
             DeploymentName = _deploymentName,
             Messages =
             {
-                new ChatRequestSystemMessage("You summarize SQL query results into plain English for the user."),
+                new ChatRequestSystemMessage(
+                    "You are an AI assistant that directly answers user questions based on the provided SQL data results. " +
+                    "Always read the JSON `Data` and provide a direct, human-readable answer to the user's question. " +
+                    "Do NOT describe the data; instead, infer the answer from it. If the data is empty, say no results found.\n\n" +
+                    "Also recommend the best chart type based on the nature of the data:\n" +
+                    "- Use 'bar' for category comparisons\n" +
+                    "- Use 'line' for trends over time\n" +
+                    "- Use 'pie' for proportions\n" +
+                    "- Use 'table' if detailed list or single value\n\n" +
+                    "Respond ONLY in JSON with keys 'answer' and 'chart_type'. Example:\n" +
+                    "{ \"answer\": \"SalesRep 61475 is MAE CAVES.\", \"chart_type\": \"table\" }"
+                ),
                 new ChatRequestUserMessage($"Question: {question}\nData: {jsonData}")
             }
         };
 
         var response = await client.GetChatCompletionsAsync(chatOptions);
-        return response.Value.Choices[0].Message.Content.Trim();
+        string raw = response.Value.Choices[0].Message.Content.Trim();
+
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            string answer = doc.RootElement.GetProperty("answer").GetString() ?? "";
+            string chartType = doc.RootElement.GetProperty("chart_type").GetString() ?? "table";
+            return (answer, chartType);
+        }
+        catch
+        {
+            return (raw, "table");
+        }
     }
 }
