@@ -49,6 +49,19 @@ class SessionStore:
     def _save_stats(self) -> None:
         self.stats_path.write_text(json.dumps(self.file_stats))
 
+    def clear(self) -> None:
+        try:
+            _chroma_client.delete_collection(self.collection_name)
+        except Exception:
+            pass
+        self.collection = _chroma_client.get_or_create_collection(
+            name=self.collection_name,
+            embedding_function=_embed_fn,
+            metadata={"hnsw:space": "cosine"},
+        )
+        self.file_stats = {}
+        self._save_stats()
+
     def add_document(self, source: str, chunks: list[str], row_count: int | None = None) -> int:
         if not chunks:
             return 0

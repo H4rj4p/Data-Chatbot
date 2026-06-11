@@ -1,53 +1,27 @@
-const sessionId = localStorage.getItem("sessionId") || crypto.randomUUID();
-localStorage.setItem("sessionId", sessionId);
-
 const chatEl = document.getElementById("chat");
 const emptyState = document.getElementById("empty-state");
+const dataStatus = document.getElementById("data-status");
 const questionInput = document.getElementById("question");
 const sendBtn = document.getElementById("send-btn");
-const uploadBtn = document.getElementById("upload-btn");
-const fileInput = document.getElementById("file-input");
 
 let history = [];
-let isStreaming = false;
-
-const sessionHeaders = () => ({ "X-Session-Id": sessionId });
-
-async function parseResponse(res) {
-  const text = await res.text();
-  let data = null;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    // response was not JSON
-  }
-  if (!res.ok) {
-    throw new Error((data && data.detail) || text || "Request failed");
-  }
-  return data;
-}
+let isSending = false;
 
 function hideEmptyState() {
   if (emptyState) emptyState.remove();
 }
 
-function addMessage(role, text, streaming = false) {
+function createMessage(role) {
   hideEmptyState();
-
   const wrapper = document.createElement("div");
   wrapper.className = `message ${role}`;
-
   const inner = document.createElement("div");
   inner.className = "message-inner";
-
   const avatar = document.createElement("div");
   avatar.className = `avatar ${role}`;
   avatar.textContent = role === "user" ? "You" : role === "assistant" ? "AI" : "·";
-
   const bubble = document.createElement("div");
-  bubble.className = `bubble${streaming ? " streaming" : ""}`;
-  bubble.textContent = text;
-
+  bubble.className = "bubble";
   inner.appendChild(avatar);
   inner.appendChild(bubble);
   wrapper.appendChild(inner);
@@ -56,88 +30,127 @@ function addMessage(role, text, streaming = false) {
   return bubble;
 }
 
-function autoResize() {
-  questionInput.style.height = "auto";
-  questionInput.style.height = Math.min(questionInput.scrollHeight, 200) + "px";
+function renderTable(bubble, columns, rows) {
+  const table = document.createElement("table");
+  table.className = "data-table";
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  columns.forEach((col) => {
+    const th = document.createElement("th");
+    th.textContent = col;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    row.forEach((cell) => {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  bubble.appendChild(table);
 }
 
-uploadBtn.addEventListener("click", () => fileInput.click());
+function renderChart(bubble, chart) {
+  const wrap = document.createElement("div");
+  wrap.className = "chart-wrap";
+  const canvas = document.createElement("canvas");
+  wrap.appendChild(canvas);
+  bubble.appendChild(wrap);
 
-fileInput.addEventListener("change", async () => {
-  const file = fileInput.files[0];
-  if (!file) return;
+  new Chart(canvas, {
+    type: chart.kind || "bar",
+    data: {
+      labels: chart.labels || [],
+      datasets: [
+        {
+          label: chart.label || "Value",
+          data: chart.values || [],
+          backgroundColor: "#19c37d",
+          borderColor: "#19c37d",
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { color: "#ececec" } } },
+      scales: {
+        x: { ticks: { color: "#aaa" }, grid: { color: "#222" } },
+        y: { ticks: { color: "#aaa" }, grid: { color: "#222" } },
+      },
+    },
+  });
+}
 
-  const statusBubble = addMessage("system", `Uploading ${file.name}...`);
+function renderAnswer(bubble, data) {
+  bubble.innerHTML = "";
+  const text = document.createElement("p");
+  text.textContent = data.text;
+  bubble.appendChild(text);
 
-  const formData = new FormData();
-  formData.append("file", file);
-
-  try {
-    const res = await fetch("/api/upload", {
-      method: "POST",
-      headers: sessionHeaders(),
-      body: formData,
-    });
-    const data = await parseResponse(res);
-    statusBubble.textContent = `Uploaded ${data.filename}. You can now ask questions about it.`;
-    statusBubble.parentElement.parentElement.className = "message system";
-  } catch (err) {
-    statusBubble.textContent = `Upload failed: ${err.message}`;
+  if (data.columns && data.rows && (data.type === "table" || data.type === "chart")) {
+    renderTable(bubble, data.columns, data.rows);
   }
+  if (data.type === "chart" && data.chart) {
+    renderChart(bubble, data.chart);
+  }
+}
 
-  fileInput.value = "";
-});
+async function loadDataStatus() {
+  const res = await fetch("/api/data");
+  const data = await res.json();
+  if (data.loaded) {
+    dataStatus.textContent = `Loaded ${data.rows} rows from ${data.path} · edit the file and ask again to refresh`;
+  } else {
+    dataStatus.textContent = `Waiting for data file at ${data.path}`;
+  }
+}
 
 async function send() {
   const message = questionInput.value.trim();
-  if (!message || isStreaming) return;
+  if (!message || isSending) return;
 
   questionInput.value = "";
-  autoResize();
-  addMessage("user", message);
+  questionInput.style.height = "auto";
+  createMessage("user").textContent = message;
   history.push({ role: "user", content: message });
 
-  isStreaming = true;
+  isSending = true;
   sendBtn.disabled = true;
-  const bubble = addMessage("assistant", "", true);
-  let reply = "";
+  const bubble = createMessage("assistant");
+  bubble.textContent = "Thinking...";
 
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
-      headers: { ...sessionHeaders(), "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message, history: history.slice(0, -1) }),
     });
-
-    if (!res.ok) await parseResponse(res);
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      reply += decoder.decode(value, { stream: true });
-      bubble.textContent = reply;
-      chatEl.scrollTop = chatEl.scrollHeight;
-    }
-
-    bubble.classList.remove("streaming");
-    history.push({ role: "assistant", content: reply });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Request failed");
+    renderAnswer(bubble, data);
+    history.push({ role: "assistant", content: data.text });
+    loadDataStatus();
   } catch (err) {
-    bubble.classList.remove("streaming");
     bubble.textContent = `Error: ${err.message}`;
   } finally {
-    isStreaming = false;
+    isSending = false;
     sendBtn.disabled = false;
   }
 }
 
 sendBtn.addEventListener("click", send);
-questionInput.addEventListener("input", autoResize);
 questionInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     send();
   }
 });
+
+loadDataStatus();
