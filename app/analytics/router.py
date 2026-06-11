@@ -19,7 +19,7 @@ def answer_question(question: str, history: list[dict]) -> ChatAnswer:
             text=f"No data loaded. Put your CSV at {info['path']} and restart the server.",
         )
 
-    analytics = try_analytics_answer(question, df)
+    analytics = try_analytics_answer(question, df, history)
     if analytics:
         return analytics
 

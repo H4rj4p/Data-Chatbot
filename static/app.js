@@ -94,7 +94,16 @@ function renderAnswer(bubble, data) {
   text.textContent = data.text;
   bubble.appendChild(text);
 
-  if (data.columns && data.rows && (data.type === "table" || data.type === "chart")) {
+  if (data.tables?.length) {
+    data.tables.forEach((section) => {
+      const heading = document.createElement("p");
+      heading.textContent = section.title;
+      heading.style.marginTop = "16px";
+      heading.style.color = "#aaa";
+      bubble.appendChild(heading);
+      renderTable(bubble, section.columns, section.rows);
+    });
+  } else if (data.columns && data.rows && (data.type === "table" || data.type === "chart")) {
     renderTable(bubble, data.columns, data.rows);
   }
   if (data.type === "chart" && data.chart) {

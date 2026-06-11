@@ -11,6 +11,7 @@ class ChatAnswer:
     columns: list[str] | None = None
     rows: list[list[Any]] | None = None
     chart: dict[str, Any] | None = None
+    tables: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
