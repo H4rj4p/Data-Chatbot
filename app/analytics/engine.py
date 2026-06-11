@@ -452,6 +452,30 @@ PERSON_LOOKUP_PHRASES = (
     "who's",
 )
 
+CHITCHAT_WORDS = frozenset({
+    "hi",
+    "hello",
+    "hey",
+    "hiya",
+    "yo",
+    "sup",
+    "thanks",
+    "thank",
+    "thx",
+    "ty",
+    "ok",
+    "okay",
+    "yes",
+    "no",
+    "yeah",
+    "yep",
+    "nope",
+    "bye",
+    "goodbye",
+    "help",
+    "please",
+})
+
 ANALYTICS_SIGNALS = (
     "how many",
     "count",
@@ -476,6 +500,26 @@ ANALYTICS_SIGNALS = (
     "list ",
     "breakdown",
 )
+
+
+def _is_chitchat(question: str) -> bool:
+    normalized = _normalize(question.strip().rstrip("?.!"))
+    if normalized in CHITCHAT_WORDS:
+        return True
+    return normalized.startswith(("hi ", "hello ", "hey ", "thanks ", "thank you"))
+
+
+def _try_greeting(question: str) -> ChatAnswer | None:
+    if not _is_chitchat(question):
+        return None
+    return ChatAnswer(
+        type="text",
+        text=(
+            "Hi! I can answer questions about your data file. "
+            "Try: 'how many HR coordinators', 'information on Harjap', "
+            "or 'top 5 salary high to low'."
+        ),
+    )
 
 
 def _is_person_lookup(question: str) -> bool:
@@ -512,6 +556,8 @@ def _recent_person_context(history: list[dict]) -> bool:
 def _looks_like_name_only(question: str) -> bool:
     q = question.strip().rstrip("?.!")
     if not q or len(q.split()) > 4:
+        return False
+    if _is_chitchat(question):
         return False
     if _extract_followup_person_term(question):
         return False
@@ -733,6 +779,10 @@ def try_analytics_answer(
     history: list[dict] | None = None,
 ) -> ChatAnswer | None:
     q = _normalize(question)
+
+    greeting = _try_greeting(question)
+    if greeting:
+        return greeting
 
     person_answer = _try_person_lookup(question, df, history)
     if person_answer:
