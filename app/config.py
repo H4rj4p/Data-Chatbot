@@ -8,7 +8,16 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 
-DATA_FILE = Path(os.getenv("DATA_FILE", str(BASE_DIR / "data_source" / "employees.csv")))
+
+def _resolve_data_file() -> Path:
+    raw = os.getenv("DATA_FILE", "data_source/SampleData.csv")
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path.resolve()
+
+
+DATA_FILE = _resolve_data_file()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "llama3.2:latest")
 
