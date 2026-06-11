@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: data-chatbot
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OPENAI_CHAT_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-small
+    disk:
+      name: data
+      mountPath: /app/data
+      sizeGB: 1
