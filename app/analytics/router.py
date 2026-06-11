@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from app.analytics.engine import try_analytics_answer
 from app.analytics.models import ChatAnswer
+from app.analytics.planned import try_planned_answer
 from app.data_loader import get_dataframe, get_dataframe_info, reload_data_if_changed
-from app.rag.chat import answer_with_llm
-from app.rag.store import get_store
-from app.config import APP_SESSION_ID
 
 
 def answer_question(question: str, history: list[dict]) -> ChatAnswer:
@@ -23,6 +21,14 @@ def answer_question(question: str, history: list[dict]) -> ChatAnswer:
     if analytics:
         return analytics
 
-    store = get_store(APP_SESSION_ID)
-    text = answer_with_llm(store, question, history)
-    return ChatAnswer(type="text", text=text)
+    planned = try_planned_answer(question, df, history)
+    if planned:
+        return planned
+
+    return ChatAnswer(
+        type="text",
+        text=(
+            "I couldn't compute a reliable answer from your data. "
+            "Try rephrasing, or ask about names, roles, salaries, ages, counts, averages, or totals."
+        ),
+    )
