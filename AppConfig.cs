@@ -21,7 +21,8 @@ public static class AppConfig
         hostOverride = hostOverride.Trim();
         var builder = new MySqlConnectionStringBuilder(connectionString)
         {
-            Server = hostOverride
+            Server = hostOverride,
+            ConnectionTimeout = 30
         };
 
         return builder.ConnectionString;

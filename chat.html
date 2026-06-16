@@ -66,6 +66,76 @@
       font-size: 0.75rem;
       color: #acacbe;
     }
+    .sql-query {
+      margin-top: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.72rem;
+      color: #c5c5d2;
+      background: #2a2b32;
+      border: 1px solid #565869;
+      border-radius: 4px;
+      padding: 6px 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .sql-label {
+      font-size: 0.68rem;
+      color: #8e8ea0;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 4px;
+    }
+    .data-table-wrap {
+      margin-top: 10px;
+      display: inline-block;
+      max-width: 100%;
+      overflow-x: auto;
+      border: 1px solid #565869;
+      border-radius: 2px;
+      background: #2a2b32;
+    }
+    .data-table {
+      border-collapse: collapse;
+      font-size: 0.78rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .data-table th,
+    .data-table td {
+      padding: 2px 8px;
+      text-align: left;
+      border: 1px solid #565869;
+      white-space: nowrap;
+      line-height: 1.35;
+    }
+    .data-table th {
+      background: #343541;
+      color: #acacbe;
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+    .data-table tbody tr:hover td {
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .confirm-names {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .name-pick {
+      background: #40414f;
+      color: #ececf1;
+      border: 1px solid #565869;
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 0.78rem;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .name-pick:hover {
+      background: #5436da;
+      border-color: #5436da;
+    }
     .composer-wrap {
       position: fixed;
       bottom: 0;
@@ -125,7 +195,7 @@
       <div class="avatar">AI</div>
       <div class="bubble" id="welcome">
         Hi! I'm the IRI Chatbot. Ask questions about your connected database in plain English, and I'll answer in plain English too.
-        <div class="meta">Example: "How many records are in the customers table?" or "What were total sales last month?"</div>
+        <div class="meta">Example: "How many rows are in customers?" — use your real table names from /api/GetDatabaseSchema</div>
       </div>
     </div>
   </div>
@@ -144,6 +214,22 @@
     const send = document.getElementById("send");
     const status = document.getElementById("status");
     const base = window.location.origin;
+    const chatHistory = [];
+    let lastUserQuestion = "";
+
+    function looksLikeJson(text) {
+      if (!text) return false;
+      const trimmed = text.trim();
+      return trimmed.startsWith("{") || trimmed.startsWith("[");
+    }
+
+    function friendlyError(data) {
+      const answer = data.answer && !looksLikeJson(data.answer)
+        ? data.answer
+        : "Something went wrong.";
+      if (!data.error || looksLikeJson(data.error)) return answer;
+      return `${answer}\n\n${data.error}`;
+    }
 
     async function checkStatus() {
       try {
@@ -179,21 +265,127 @@
       messages.scrollTop = messages.scrollHeight;
     }
 
-    function addBot(text, meta) { addRow("bot", text, meta); }
-    function addUser(text) { addRow("user", text); }
+    function formatColumnLabel(name) {
+      return name
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .replace(/_/g, " ");
+    }
+
+    function formatCellValue(value) {
+      if (value === null || value === undefined) return "";
+      if (typeof value === "boolean") return value ? "Yes" : "No";
+      return String(value);
+    }
+
+    function renderDataView(rows) {
+      if (!rows || rows.length === 0) return "";
+
+      const columns = Object.keys(rows[0]);
+      if (columns.length === 0) return "";
+
+      const header = columns.map(col =>
+        `<th>${escapeHtml(formatColumnLabel(col))}</th>`
+      ).join("");
+
+      const body = rows.map(row => {
+        const cells = columns.map(col =>
+          `<td>${escapeHtml(formatCellValue(row[col]))}</td>`
+        ).join("");
+        return `<tr>${cells}</tr>`;
+      }).join("");
+
+      return `
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead><tr>${header}</tr></thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderSqlQuery(query) {
+      if (!query || query === "NA") return "";
+      return `
+        <div class="sql-query">
+          <div class="sql-label">SQL query</div>
+          ${escapeHtml(query)}
+        </div>
+      `;
+    }
+
+    function renderConfirmButtons(candidates, originalQuestion) {
+      if (!candidates || candidates.length === 0) return "";
+      const buttons = candidates.map(candidate => {
+        const surname = typeof candidate === "string" ? candidate : candidate.surname;
+        const customerId = typeof candidate === "string" ? "" : candidate.customer_id;
+        const label = customerId
+          ? `${surname} (ID: ${customerId})`
+          : surname;
+        return `
+          <button type="button" class="name-pick"
+            data-surname="${escapeAttr(surname)}"
+            data-customer-id="${escapeAttr(customerId ?? "")}"
+            data-question="${escapeAttr(originalQuestion)}">
+            ${escapeHtml(label)}
+          </button>
+        `;
+      }).join("");
+      return `<div class="confirm-names">${buttons}</div>`;
+    }
+
+    function addBotResponse(answer, rows, query, options = {}) {
+      const row = document.createElement("div");
+      row.className = "row bot";
+      const tableHtml = renderDataView(rows);
+      const sqlHtml = renderSqlQuery(query);
+      const confirmHtml = options.needsConfirmation
+        ? renderConfirmButtons(options.candidates, options.originalQuestion)
+        : "";
+
+      row.innerHTML = `
+        <div class="avatar">AI</div>
+        <div class="bubble">
+          <div>${escapeHtml(answer)}</div>
+          ${confirmHtml}
+          ${tableHtml}
+          ${sqlHtml}
+        </div>
+      `;
+
+      row.querySelectorAll(".name-pick").forEach(btn => {
+        btn.addEventListener("click", () => {
+          confirmCustomer(btn.dataset.question, btn.dataset.surname, btn.dataset.customerId);
+        });
+      });
+
+      messages.appendChild(row);
+      messages.scrollTop = messages.scrollHeight;
+      chatHistory.push({ role: "assistant", content: answer });
+    }
+
+    function addBot(text, meta) {
+      addRow("bot", text, meta);
+      chatHistory.push({ role: "assistant", content: text });
+    }
+
+    function addUser(text) {
+      addRow("user", text);
+      chatHistory.push({ role: "user", content: text });
+    }
 
     function escapeHtml(str) {
-      return str.replace(/[&<>"']/g, c => ({
+      return String(str).replace(/[&<>"']/g, c => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
       }[c]));
     }
 
-    async function askQuestion() {
-      const text = input.value.trim();
-      if (!text) return;
+    function escapeAttr(str) {
+      return escapeHtml(str).replace(/`/g, "&#96;");
+    }
 
-      addUser(text);
-      input.value = "";
+    async function sendQuestion(text, confirmedSurname, confirmedCustomerId) {
+      const history = chatHistory.slice(-8);
       send.disabled = true;
 
       const thinking = document.createElement("div");
@@ -203,20 +395,42 @@
       messages.scrollTop = messages.scrollHeight;
 
       try {
+        const payload = { message: text, history };
+        if (confirmedSurname) payload.confirmed_surname = confirmedSurname;
+        if (confirmedCustomerId) payload.confirmed_customer_id = String(confirmedCustomerId);
+
         const res = await fetch(`${base}/api/AskQuestion`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text })
+          body: JSON.stringify(payload)
         });
         const data = await res.json();
         thinking.remove();
 
         if (data.error && !data.answer) {
-          addBot(`Sorry, something went wrong.\n\n${data.error}`);
+          addBot(friendlyError(data));
           return;
         }
 
-        addBot(data.answer || "I couldn't find an answer.");
+        if (data.error && data.answer) {
+          addBotResponse(
+            friendlyError(data),
+            data.data || [],
+            data.query || ""
+          );
+          return;
+        }
+
+        addBotResponse(
+          data.answer || "I couldn't find an answer.",
+          data.data || [],
+          data.query || "",
+          {
+            needsConfirmation: !!data.needs_confirmation,
+            candidates: data.candidates || [],
+            originalQuestion: text
+          }
+        );
       } catch (err) {
         thinking.remove();
         addBot(`Sorry, I couldn't reach the server.\n\n${err.message}`);
@@ -224,6 +438,22 @@
         send.disabled = false;
         input.focus();
       }
+    }
+
+    async function confirmCustomer(originalQuestion, surname, customerId) {
+      const label = customerId ? `${surname} (ID: ${customerId})` : surname;
+      addUser(`Yes, ${label}`);
+      await sendQuestion(originalQuestion, surname, customerId);
+    }
+
+    async function askQuestion() {
+      const text = input.value.trim();
+      if (!text) return;
+
+      lastUserQuestion = text;
+      addUser(text);
+      input.value = "";
+      await sendQuestion(text);
     }
 
     send.addEventListener("click", askQuestion);

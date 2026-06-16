@@ -3,6 +3,7 @@ using MySqlConnector;
 public class SchemaProvider
 {
     private readonly string? _connectionString;
+    private string? _cachedCustomersTable;
 
     public SchemaProvider(string? connectionString)
     {
@@ -12,10 +13,75 @@ public class SchemaProvider
     public async Task<string> GetSchemaTextAsync()
     {
         string fileSchema = LoadSchemaFile();
+        string? liveTable = await GetCustomersTableNameAsync();
+
+        if (!string.IsNullOrWhiteSpace(fileSchema) && !string.IsNullOrWhiteSpace(liveTable))
+        {
+            return fileSchema.Replace("Customers", liveTable, StringComparison.Ordinal);
+        }
+
         if (!string.IsNullOrWhiteSpace(fileSchema))
             return fileSchema;
 
         return await LoadSchemaFromDatabaseAsync();
+    }
+
+    public async Task<string?> GetCustomersTableNameAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(_cachedCustomersTable))
+            return _cachedCustomersTable;
+
+        if (string.IsNullOrWhiteSpace(_connectionString))
+            return null;
+
+        const string sql = """
+            SELECT TABLE_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND COLUMN_NAME IN ('Surname', 'CreditScore', 'CustomerId')
+            GROUP BY TABLE_NAME
+            HAVING SUM(COLUMN_NAME = 'Surname') > 0
+            ORDER BY TABLE_NAME
+            LIMIT 1
+            """;
+
+        try
+        {
+            await using var connection = new MySqlConnection(_connectionString);
+            await connection.OpenAsync();
+            await using var command = new MySqlCommand(sql, connection);
+            var result = await command.ExecuteScalarAsync();
+            _cachedCustomersTable = result?.ToString();
+            return _cachedCustomersTable;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public async Task<List<string>> ListTablesAsync()
+    {
+        var tables = new List<string>();
+        if (string.IsNullOrWhiteSpace(_connectionString))
+            return tables;
+
+        const string sql = """
+            SELECT TABLE_NAME
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_TYPE = 'BASE TABLE'
+            ORDER BY TABLE_NAME
+            """;
+
+        await using var connection = new MySqlConnection(_connectionString);
+        await connection.OpenAsync();
+        await using var command = new MySqlCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            tables.Add(reader.GetString(0));
+
+        return tables;
     }
 
     private static string LoadSchemaFile()
@@ -25,9 +91,7 @@ public class SchemaProvider
             return "";
 
         string content = File.ReadAllText(path).Trim();
-        bool hasTableDefinition = content.Contains("CREATE TABLE", StringComparison.OrdinalIgnoreCase)
-            || content.Contains("TABLE ", StringComparison.OrdinalIgnoreCase);
-
+        bool hasTableDefinition = content.Contains("CREATE TABLE", StringComparison.OrdinalIgnoreCase);
         return hasTableDefinition ? content : "";
     }
 
@@ -38,7 +102,6 @@ public class SchemaProvider
 
         const string sql = """
             SELECT
-                c.TABLE_SCHEMA,
                 c.TABLE_NAME,
                 c.COLUMN_NAME,
                 c.DATA_TYPE,
@@ -49,7 +112,7 @@ public class SchemaProvider
                AND c.TABLE_NAME = t.TABLE_NAME
             WHERE t.TABLE_TYPE = 'BASE TABLE'
               AND c.TABLE_SCHEMA = DATABASE()
-            ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION
+            ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION
             """;
 
         var lines = new List<string> { "-- Auto-generated from INFORMATION_SCHEMA" };
@@ -62,19 +125,17 @@ public class SchemaProvider
         string? currentTable = null;
         while (await reader.ReadAsync())
         {
-            string schema = reader["TABLE_SCHEMA"]?.ToString() ?? "";
             string table = reader["TABLE_NAME"]?.ToString() ?? "";
             string column = reader["COLUMN_NAME"]?.ToString() ?? "";
             string dataType = reader["DATA_TYPE"]?.ToString() ?? "";
             string nullable = reader["IS_NULLABLE"]?.ToString() ?? "";
 
-            string tableKey = $"{schema}.{table}";
-            if (tableKey != currentTable)
+            if (table != currentTable)
             {
                 if (currentTable != null)
                     lines.Add(");");
-                lines.Add($"CREATE TABLE `{schema}`.`{table}` (");
-                currentTable = tableKey;
+                lines.Add($"CREATE TABLE `{table}` (");
+                currentTable = table;
             }
 
             lines.Add($"  `{column}` {dataType} NULL={nullable},");

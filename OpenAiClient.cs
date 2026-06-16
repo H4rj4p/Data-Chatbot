@@ -38,7 +38,10 @@ public class OpenAiClient
         string body = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"OpenAI request failed: {body}");
+        {
+            string message = TryExtractOpenAiError(body) ?? body;
+            throw new InvalidOperationException($"OpenAI request failed: {message}");
+        }
 
         using var doc = JsonDocument.Parse(body);
         return doc.RootElement
@@ -46,5 +49,23 @@ public class OpenAiClient
             .GetProperty("message")
             .GetProperty("content")
             .GetString() ?? "";
+    }
+
+    private static string? TryExtractOpenAiError(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("error", out var error) &&
+                error.TryGetProperty("message", out var message))
+            {
+                return message.GetString();
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
     }
 }

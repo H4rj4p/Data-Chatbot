@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using MySqlConnector;
@@ -29,13 +30,12 @@ public class IriChatQueryFunction
         HttpCors.Apply(response);
 
         var body = await new StreamReader(req.Body).ReadToEndAsync();
-        var data = JsonSerializer.Deserialize<Dictionary<string, string>>(body);
-        string question = data?.GetValueOrDefault("message") ?? "";
+        var (question, history, confirmedSurname, confirmedCustomerId) = ChatHistoryParser.ParseRequest(body);
 
         if (string.IsNullOrWhiteSpace(question))
         {
             response.StatusCode = HttpStatusCode.BadRequest;
-            await response.WriteAsJsonAsync(new { error = "Send JSON like { \"message\": \"your question\" }." });
+            await response.WriteAsJsonAsync(new { error = "Send JSON like { \"message\": \"your question\", \"history\": [] }." });
             return response;
         }
 
@@ -57,15 +57,29 @@ public class IriChatQueryFunction
 
         try
         {
-            string sqlQuery = await GenerateSqlAsync(question);
-            sqlQuery = SqlSafety.CleanSql(sqlQuery);
+            string? customersTable = await _schemaProvider.GetCustomersTableNameAsync();
+            if (string.IsNullOrWhiteSpace(customersTable))
+            {
+                var tables = await _schemaProvider.ListTablesAsync();
+                await response.WriteAsJsonAsync(new
+                {
+                    answer = "I can't find a Customers table in bank_data. Create/import your data first, then try again.",
+                    error = tables.Count == 0
+                        ? "No tables found in bank_data."
+                        : $"Tables found: {string.Join(", ", tables)}"
+                });
+                return response;
+            }
+
+            string sqlQuery = await GenerateSqlAsync(question, history, customersTable, confirmedSurname, confirmedCustomerId);
+            sqlQuery = SqlSafety.CleanSql(sqlQuery, customersTable);
 
             if (sqlQuery.Equals("NA", StringComparison.OrdinalIgnoreCase))
             {
                 await response.WriteAsJsonAsync(new
                 {
                     query = "NA",
-                    answer = "I could not turn that question into a safe SQL query.",
+                    answer = "I couldn't map that question to your bank_data tables. Open /api/GetDatabaseSchema to see table and column names, then ask using those names — for example: \"What is the credit score for customers named Hill?\"",
                     data = Array.Empty<object>(),
                     chart_type = "table"
                 });
@@ -85,7 +99,28 @@ public class IriChatQueryFunction
             }
 
             var results = await ExecuteSqlAsync(sqlQuery);
-            var (answer, chartType) = await GenerateAnswerAsync(question, results);
+            var candidates = SurnameDisambiguation.GetCandidates(results);
+
+            if (SurnameDisambiguation.ShouldConfirm(candidates, question, confirmedCustomerId))
+            {
+                await response.WriteAsJsonAsync(new
+                {
+                    query = sqlQuery,
+                    answer = $"I found {candidates.Count} matching customers. Which one did you mean?",
+                    needs_confirmation = true,
+                    candidates = candidates.Select(c => new
+                    {
+                        customer_id = c.CustomerId,
+                        surname = c.Surname
+                    }),
+                    data = results,
+                    chart_type = "table"
+                });
+                return response;
+            }
+
+            var (answer, chartType) = await GenerateAnswerAsync(
+                question, history, results, confirmedSurname, confirmedCustomerId);
 
             await response.WriteAsJsonAsync(new
             {
@@ -95,47 +130,85 @@ public class IriChatQueryFunction
                 chart_type = chartType
             });
         }
+        catch (MySqlException ex)
+        {
+            await response.WriteAsJsonAsync(new
+            {
+                answer = "I couldn't run the database query. The table or column name may be wrong for your bank_data database.",
+                error = ex.Message
+            });
+        }
         catch (Exception ex)
         {
             response.StatusCode = HttpStatusCode.OK;
             await response.WriteAsJsonAsync(new
             {
                 error = ex.Message,
-                answer = "Something went wrong while answering your question."
+                answer = ex.Message.Contains("OpenAI", StringComparison.OrdinalIgnoreCase)
+                    ? "ChatGPT request failed. Check your API key, billing, and restart the app after updating local.settings.json."
+                    : $"Something went wrong: {ex.Message}"
             });
         }
 
         return response;
     }
 
-    private async Task<string> GenerateSqlAsync(string question)
+    private static string ExtractSqlQuery(string raw)
     {
-        string schemaText = await _schemaProvider.GetSchemaTextAsync();
-        string instructionsText = SchemaProvider.LoadTextFile("instructions.txt");
-        string samplesText = SchemaProvider.LoadTextFile("sample_queries.txt");
-
-        string systemPrompt =
-            $"{instructionsText}\n\n" +
-            $"Database schema:\n```sql\n{schemaText}\n```\n\n" +
-            $"Example queries:\n```sql\n{samplesText}\n```";
-
-        string raw = await _openAi.GetCompletionAsync(systemPrompt, question);
-        raw = raw.Replace("```json", "", StringComparison.OrdinalIgnoreCase)
-                 .Replace("```", "")
-                 .Trim();
+        raw = raw
+            .Replace("```json", "", StringComparison.OrdinalIgnoreCase)
+            .Replace("```sql", "", StringComparison.OrdinalIgnoreCase)
+            .Replace("```", "")
+            .Trim();
 
         try
         {
             using var doc = JsonDocument.Parse(raw);
-            if (doc.RootElement.TryGetProperty("query", out var queryProp))
-                return queryProp.GetString() ?? "NA";
+            foreach (var propertyName in new[] { "query", "Query", "sql", "SQL" })
+            {
+                if (doc.RootElement.TryGetProperty(propertyName, out var queryProp))
+                    return queryProp.GetString() ?? "NA";
+            }
         }
         catch
         {
             Console.WriteLine("[WARN] Could not parse SQL JSON response.");
         }
 
+        var sqlMatch = Regex.Match(
+            raw,
+            @"\bSELECT\b[\s\S]+",
+            RegexOptions.IgnoreCase);
+
+        if (sqlMatch.Success)
+            return sqlMatch.Value.Trim().TrimEnd(';');
+
         return raw;
+    }
+
+    private async Task<string> GenerateSqlAsync(
+        string question,
+        List<ChatMessage> history,
+        string customersTable,
+        string? confirmedSurname,
+        string? confirmedCustomerId)
+    {
+        string schemaText = await _schemaProvider.GetSchemaTextAsync();
+        string instructionsText = SchemaProvider.LoadTextFile("instructions.txt");
+        string samplesText = SchemaProvider.LoadTextFile("sample_queries.txt");
+        string userPrompt = ChatHistoryParser.FormatForPrompt(
+            question, history, confirmedSurname, confirmedCustomerId);
+
+        string systemPrompt =
+            $"{instructionsText}\n\n" +
+            $"The actual MySQL table name is `{customersTable}`. Always use that exact table name in SQL.\n\n" +
+            $"Database schema:\n```sql\n{schemaText}\n```\n\n" +
+            $"Example queries:\n```sql\n{samplesText}\n```\n\n" +
+            "Use conversation history for follow-ups. Person names go in Surname. Location questions use Geography. " +
+            "Compound questions with 'and' need one SELECT returning every requested metric as its own column.";
+
+        string raw = await _openAi.GetCompletionAsync(systemPrompt, userPrompt);
+        return ExtractSqlQuery(raw);
     }
 
     private async Task<List<Dictionary<string, object?>>> ExecuteSqlAsync(string sqlQuery)
@@ -161,19 +234,28 @@ public class IriChatQueryFunction
 
     private async Task<(string answer, string chartType)> GenerateAnswerAsync(
         string question,
-        List<Dictionary<string, object?>> data)
+        List<ChatMessage> history,
+        List<Dictionary<string, object?>> data,
+        string? confirmedSurname,
+        string? confirmedCustomerId)
     {
         string jsonData = JsonSerializer.Serialize(data);
+        string userPrompt = ChatHistoryParser.FormatForPrompt(
+            question, history, confirmedSurname, confirmedCustomerId);
         string systemPrompt =
             "You are the IRI Chatbot. Answer the user's question in clear, friendly, conversational English. " +
-            "Write like ChatGPT speaking to a colleague: complete sentences, no jargon about SQL or JSON. " +
+            "Use conversation history for follow-ups (he/she/they refers to the person discussed earlier). " +
+            "Write like ChatGPT: complete sentences, no jargon about SQL or JSON. " +
+            "Never output JSON, code blocks, or raw data in the answer text. " +
+            "If the question has multiple parts (especially joined by 'and'), answer EVERY part using the data. " +
+            "Example: for total_customers and male_count, say both the total and how many are male. " +
             "Use only the provided data. If there are no rows, say you couldn't find matching data. " +
             "Respond ONLY in JSON with keys 'answer' and 'chart_type'. " +
             "chart_type must be one of: bar, line, pie, table.";
 
         string raw = await _openAi.GetCompletionAsync(
             systemPrompt,
-            $"Question: {question}\nData: {jsonData}");
+            $"{userPrompt}\nData: {jsonData}");
 
         try
         {
@@ -184,7 +266,43 @@ public class IriChatQueryFunction
         }
         catch
         {
-            return (raw, "table");
+            return (ExtractAnswerFromRaw(raw), "table");
         }
+    }
+
+    private static string ExtractAnswerFromRaw(string raw)
+    {
+        raw = raw
+            .Replace("```json", "", StringComparison.OrdinalIgnoreCase)
+            .Replace("```", "")
+            .Trim();
+
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.TryGetProperty("answer", out var answerProp))
+                return answerProp.GetString() ?? "Here's what I found.";
+        }
+        catch
+        {
+        }
+
+        var match = Regex.Match(raw, @"""answer""\s*:\s*""((?:\\.|[^""\\])*)""");
+        if (match.Success)
+        {
+            try
+            {
+                return JsonSerializer.Deserialize<string>($"\"{match.Groups[1].Value}\"") ?? match.Groups[1].Value;
+            }
+            catch
+            {
+                return match.Groups[1].Value;
+            }
+        }
+
+        if (raw.StartsWith('{') || raw.StartsWith('['))
+            return "Here's what I found in the data above.";
+
+        return raw;
     }
 }
