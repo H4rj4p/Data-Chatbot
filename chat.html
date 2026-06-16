@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IRI Chatbot</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #343541;
+      color: #ececf1;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 14px 20px;
+      border-bottom: 1px solid #565869;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #202123;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; }
+    #status {
+      font-size: 0.8rem;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #565869;
+    }
+    #status.ok { background: #1a7f37; }
+    #status.bad { background: #a40e26; }
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 0 120px;
+    }
+    .row {
+      max-width: 780px;
+      margin: 0 auto 18px;
+      padding: 0 20px;
+      display: flex;
+      gap: 14px;
+    }
+    .avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .row.user .avatar { background: #5436da; }
+    .row.bot .avatar { background: #19c37d; color: #111; }
+    .bubble {
+      line-height: 1.55;
+      white-space: pre-wrap;
+      padding-top: 4px;
+    }
+    .meta {
+      margin-top: 10px;
+      font-size: 0.75rem;
+      color: #acacbe;
+    }
+    .composer-wrap {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: linear-gradient(transparent, #343541 30%);
+      padding: 16px 20px 24px;
+    }
+    .composer {
+      max-width: 780px;
+      margin: 0 auto;
+      display: flex;
+      gap: 10px;
+      background: #40414f;
+      border: 1px solid #565869;
+      border-radius: 14px;
+      padding: 10px 12px;
+    }
+    textarea {
+      flex: 1;
+      resize: none;
+      border: none;
+      background: transparent;
+      color: #ececf1;
+      font: inherit;
+      outline: none;
+      min-height: 24px;
+      max-height: 160px;
+    }
+    button {
+      border: none;
+      background: #19c37d;
+      color: #111;
+      font-weight: 600;
+      border-radius: 10px;
+      padding: 0 16px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .hint {
+      max-width: 780px;
+      margin: 0 auto 8px;
+      font-size: 0.8rem;
+      color: #acacbe;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>IRI Chatbot</h1>
+    <span id="status">Checking database...</span>
+  </header>
+
+  <div id="messages">
+    <div class="row bot">
+      <div class="avatar">AI</div>
+      <div class="bubble" id="welcome">
+        Hi! I'm the IRI Chatbot. Ask questions about your connected database in plain English, and I'll answer in plain English too.
+        <div class="meta">Example: "How many records are in the customers table?" or "What were total sales last month?"</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="composer-wrap">
+    <div class="hint">Press Enter to send, Shift+Enter for a new line</div>
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="Ask a question about your data..."></textarea>
+      <button id="send">Send</button>
+    </div>
+  </div>
+
+  <script>
+    const messages = document.getElementById("messages");
+    const input = document.getElementById("input");
+    const send = document.getElementById("send");
+    const status = document.getElementById("status");
+    const base = window.location.origin;
+
+    async function checkStatus() {
+      try {
+        const res = await fetch(`${base}/api/TestSqlConnection`);
+        const data = await res.json();
+        if (data.success) {
+          status.textContent = `Connected: ${data.database}`;
+          status.className = "ok";
+          const welcome = document.getElementById("welcome");
+          if (welcome) {
+            welcome.innerHTML = `Hi! I'm the IRI Chatbot. You're connected to <strong>${escapeHtml(data.database)}</strong>. Ask anything about your data in plain English.`;
+          }
+        } else {
+          status.textContent = "DB not connected";
+          status.className = "bad";
+          addBot(`I can't reach the database yet.\n\n${data.error || data.message}\n\nIf MySQL runs on Windows and the app runs on Mac, set MySqlHost in local.settings.json to your Windows IP (run ipconfig on Windows).`);
+        }
+      } catch {
+        status.textContent = "App not running";
+        status.className = "bad";
+        addBot("The app isn't running. Start it with: .tools/func/func start --port 7179");
+      }
+    }
+
+    function addRow(role, text, meta) {
+      const row = document.createElement("div");
+      row.className = `row ${role}`;
+      row.innerHTML = `
+        <div class="avatar">${role === "user" ? "You" : "AI"}</div>
+        <div class="bubble">${escapeHtml(text)}${meta ? `<div class="meta">${escapeHtml(meta)}</div>` : ""}</div>
+      `;
+      messages.appendChild(row);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function addBot(text, meta) { addRow("bot", text, meta); }
+    function addUser(text) { addRow("user", text); }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[c]));
+    }
+
+    async function askQuestion() {
+      const text = input.value.trim();
+      if (!text) return;
+
+      addUser(text);
+      input.value = "";
+      send.disabled = true;
+
+      const thinking = document.createElement("div");
+      thinking.className = "row bot";
+      thinking.innerHTML = `<div class="avatar">AI</div><div class="bubble">Thinking...</div>`;
+      messages.appendChild(thinking);
+      messages.scrollTop = messages.scrollHeight;
+
+      try {
+        const res = await fetch(`${base}/api/AskQuestion`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text })
+        });
+        const data = await res.json();
+        thinking.remove();
+
+        if (data.error && !data.answer) {
+          addBot(`Sorry, something went wrong.\n\n${data.error}`);
+          return;
+        }
+
+        addBot(data.answer || "I couldn't find an answer.");
+      } catch (err) {
+        thinking.remove();
+        addBot(`Sorry, I couldn't reach the server.\n\n${err.message}`);
+      } finally {
+        send.disabled = false;
+        input.focus();
+      }
+    }
+
+    send.addEventListener("click", askQuestion);
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        askQuestion();
+      }
+    });
+
+    checkStatus();
+    input.focus();
+  </script>
+</body>
+</html>

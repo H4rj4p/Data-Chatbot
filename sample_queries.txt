@@ -1,3 +1,10 @@
-1. how many calls were scheduled yesterday?
- 
-SELECT COUNT(*) AS CallCount FROM BlueBird.Event WHERE SalesRepId = 61475 AND CAST(StartTime AS DATE) = CAST(DATEADD(DAY, -1, GETDATE()) AS DATE)
+-- Replace table/column names with your real IRI database examples.
+
+-- Example: count rows
+SELECT COUNT(*) AS total FROM your_table;
+
+-- Example: recent records
+SELECT id, name, created_at
+FROM your_table
+ORDER BY created_at DESC
+LIMIT 10;
