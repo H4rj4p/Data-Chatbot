@@ -32,8 +32,9 @@ public static class AppConfig
     {
         string? host = Environment.GetEnvironmentVariable("MySqlHost")?.Trim();
 
+        // Empty MySqlHost = use Server from SqlConnectionString (e.g. localhost on Windows)
         if (string.IsNullOrWhiteSpace(host))
-            return "Set MySqlHost in local.settings.json to your Windows IPv4 address (from ipconfig).";
+            return null;
 
         if (PlaceholderHosts.Contains(host, StringComparer.OrdinalIgnoreCase))
             return $"MySqlHost is still '{host}'. Replace it with your Windows IPv4 address from ipconfig on Windows.";
