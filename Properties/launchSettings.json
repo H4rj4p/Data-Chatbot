@@ -2,7 +2,9 @@
   "profiles": {
     "IriChatbotFunction": {
       "commandName": "Project",
-      "commandLineArgs": "--port 7179",
+      "environmentVariables": {
+        "ASPNETCORE_URLS": "http://localhost:7179"
+      },
       "launchBrowser": false
     }
   }

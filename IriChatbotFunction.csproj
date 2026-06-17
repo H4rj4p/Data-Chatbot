@@ -9,6 +9,7 @@
     <RootNamespace>IriChatbot</RootNamespace>
     <Product>IRI Chatbot</Product>
     <Description>Natural-language Q&amp;A over a SQL database for IRI.</Description>
+    <_FunctionsSkipCleanOutput>true</_FunctionsSkipCleanOutput>
   </PropertyGroup>
 
   <ItemGroup>
@@ -33,6 +34,12 @@
     </None>
     <None Update="chat.html">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="local.settings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="host.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
 </Project>
