@@ -10,8 +10,14 @@ public static class ChartRecommender
         "Geography", "Gender", "Surname"
     };
 
-    public static string Recommend(List<Dictionary<string, object?>> data, string? llmChartType)
+    public static string Recommend(
+        List<Dictionary<string, object?>> data,
+        string? llmChartType,
+        string question)
     {
+        if (!ChartRequestDetector.WantsChart(question))
+            return "table";
+
         if (data.Count == 0)
             return "table";
 

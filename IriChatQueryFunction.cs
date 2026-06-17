@@ -121,7 +121,7 @@ public class IriChatQueryFunction
 
             var (answer, chartType) = await GenerateAnswerAsync(
                 question, history, results, confirmedSurname, confirmedCustomerId);
-            chartType = ChartRecommender.Recommend(results, chartType);
+            chartType = ChartRecommender.Recommend(results, chartType, question);
 
             await response.WriteAsJsonAsync(new
             {
@@ -244,19 +244,17 @@ public class IriChatQueryFunction
         string userPrompt = MultiPartQuestions.EnhanceForAnswer(
             ChatHistoryParser.FormatForPrompt(question, history, confirmedSurname, confirmedCustomerId));
         string systemPrompt =
-            "You are the IRI Chatbot. Answer the user's question in clear, friendly, conversational English. " +
-            "Use conversation history for follow-ups (he/she/they refers to the person discussed earlier). " +
-            "Write like ChatGPT: complete sentences, no jargon about SQL or JSON. " +
+            "You are the IRI Chatbot. Give a very short 1-2 line factual summary only. " +
+            "Be terse and direct — like a headline, not a conversation. " +
+            "No greetings, filler, or phrases like 'based on the data' or 'I found that'. " +
+            "Examples: '4 customers.' '4 customers above 40 with tenure 2.' 'Hargrave is 42 years old.' " +
+            "'10,000 customers; 4,559 male.' 'Average salary is 100,214.' " +
+            "For multi-part questions, fit all parts into 1-2 short lines separated by semicolons. " +
+            "Use conversation history for follow-ups (he/she/they). " +
             "Never output JSON, code blocks, or raw data in the answer text. " +
-            "If the message asks multiple things (and, also, plus, commas), answer EVERY part — use separate sentences for each. " +
-            "Example: for total_customers and male_count, state both numbers clearly. " +
-            "For average_salary plus a list of people, state the average then describe the people. " +
-            "Use only the provided data. If there are no rows, say you couldn't find matching data. " +
-            "Pick chart_type based on the data shape: " +
-            "pie for a few category parts (male vs female counts, geography breakdown with <=6 groups); " +
-            "bar for comparing multiple people or categories, or multiple metrics in one row; " +
-            "line only for ordered sequences; " +
-            "table for single-person lookups or text-heavy results. " +
+            "Use only the provided data. If no rows, say 'No matching data.' " +
+            "Set chart_type to table unless the user explicitly asked for a graph/chart/plot/visual. " +
+            "If they asked for a chart, pick bar, pie, or line based on the data. " +
             "Respond ONLY in JSON with keys 'answer' and 'chart_type'. " +
             "chart_type must be one of: bar, line, pie, table.";
 

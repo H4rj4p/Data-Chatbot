@@ -329,7 +329,13 @@
       return keys.find(k => typeof row[k] === "string" && !ID_COLS.has(k.toLowerCase())) || null;
     }
 
-    function resolveChartType(rows, chartType) {
+    function userWantsChart(question) {
+      return /\b(graph|graphs|chart|charts|plot|plots|visual|visuali[sz]e|diagram|pie\s*chart|bar\s*chart|line\s*chart|show\s+me\s+a\s+(graph|chart|plot))\b/i
+        .test(question || "");
+    }
+
+    function resolveChartType(rows, chartType, question) {
+      if (!userWantsChart(question)) return null;
       if (!rows || rows.length === 0) return null;
 
       if (chartType && chartType !== "table") return chartType;
@@ -523,7 +529,7 @@
 
       const resolvedChartType = options.needsConfirmation
         ? null
-        : resolveChartType(rows, options.chartType);
+        : resolveChartType(rows, options.chartType, options.question || options.originalQuestion || "");
       const chartSpec = resolvedChartType ? buildChartSpec(rows, resolvedChartType) : null;
       const chartId = chartSpec ? `chart-${++chartCounter}` : null;
       const chartHtml = chartSpec ? renderChartCanvas(chartId) : "";
@@ -617,6 +623,7 @@
             needsConfirmation: !!data.needs_confirmation,
             candidates: data.candidates || [],
             originalQuestion: text,
+            question: text,
             chartType: data.chart_type || "table"
           }
         );

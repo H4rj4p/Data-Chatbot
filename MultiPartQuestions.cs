@@ -28,7 +28,6 @@ public static class MultiPartQuestions
             return question;
 
         return question + Environment.NewLine + Environment.NewLine +
-            "IMPORTANT: Answer EVERY part of this message in full sentences. " +
-            "Do not skip or ignore any sub-question.";
+            "IMPORTANT: Answer every part in 1-2 short lines total. Be terse.";
     }
 }
