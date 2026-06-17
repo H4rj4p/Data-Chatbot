@@ -121,6 +121,7 @@ public class IriChatQueryFunction
 
             var (answer, chartType) = await GenerateAnswerAsync(
                 question, history, results, confirmedSurname, confirmedCustomerId);
+            chartType = ChartRecommender.Recommend(results, chartType);
 
             await response.WriteAsJsonAsync(new
             {
@@ -196,8 +197,8 @@ public class IriChatQueryFunction
         string schemaText = await _schemaProvider.GetSchemaTextAsync();
         string instructionsText = SchemaProvider.LoadTextFile("instructions.txt");
         string samplesText = SchemaProvider.LoadTextFile("sample_queries.txt");
-        string userPrompt = ChatHistoryParser.FormatForPrompt(
-            question, history, confirmedSurname, confirmedCustomerId);
+        string userPrompt = MultiPartQuestions.EnhanceForSql(
+            ChatHistoryParser.FormatForPrompt(question, history, confirmedSurname, confirmedCustomerId));
 
         string systemPrompt =
             $"{instructionsText}\n\n" +
@@ -205,7 +206,7 @@ public class IriChatQueryFunction
             $"Database schema:\n```sql\n{schemaText}\n```\n\n" +
             $"Example queries:\n```sql\n{samplesText}\n```\n\n" +
             "Use conversation history for follow-ups. Person names go in Surname. Location questions use Geography. " +
-            "Compound questions with 'and' need one SELECT returning every requested metric as its own column.";
+            "Multi-part messages must produce ONE SELECT that answers every part. Never use semicolons.";
 
         string raw = await _openAi.GetCompletionAsync(systemPrompt, userPrompt);
         return ExtractSqlQuery(raw);
@@ -240,16 +241,22 @@ public class IriChatQueryFunction
         string? confirmedCustomerId)
     {
         string jsonData = JsonSerializer.Serialize(data);
-        string userPrompt = ChatHistoryParser.FormatForPrompt(
-            question, history, confirmedSurname, confirmedCustomerId);
+        string userPrompt = MultiPartQuestions.EnhanceForAnswer(
+            ChatHistoryParser.FormatForPrompt(question, history, confirmedSurname, confirmedCustomerId));
         string systemPrompt =
             "You are the IRI Chatbot. Answer the user's question in clear, friendly, conversational English. " +
             "Use conversation history for follow-ups (he/she/they refers to the person discussed earlier). " +
             "Write like ChatGPT: complete sentences, no jargon about SQL or JSON. " +
             "Never output JSON, code blocks, or raw data in the answer text. " +
-            "If the question has multiple parts (especially joined by 'and'), answer EVERY part using the data. " +
-            "Example: for total_customers and male_count, say both the total and how many are male. " +
+            "If the message asks multiple things (and, also, plus, commas), answer EVERY part — use separate sentences for each. " +
+            "Example: for total_customers and male_count, state both numbers clearly. " +
+            "For average_salary plus a list of people, state the average then describe the people. " +
             "Use only the provided data. If there are no rows, say you couldn't find matching data. " +
+            "Pick chart_type based on the data shape: " +
+            "pie for a few category parts (male vs female counts, geography breakdown with <=6 groups); " +
+            "bar for comparing multiple people or categories, or multiple metrics in one row; " +
+            "line only for ordered sequences; " +
+            "table for single-person lookups or text-heavy results. " +
             "Respond ONLY in JSON with keys 'answer' and 'chart_type'. " +
             "chart_type must be one of: bar, line, pie, table.";
 

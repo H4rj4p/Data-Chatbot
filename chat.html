@@ -182,7 +182,28 @@
       color: #acacbe;
       text-align: center;
     }
+    .chart-wrap {
+      margin-top: 12px;
+      padding: 12px;
+      background: #2a2b32;
+      border: 1px solid #565869;
+      border-radius: 6px;
+      max-width: 100%;
+    }
+    .chart-label {
+      font-size: 0.68rem;
+      color: #8e8ea0;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 8px;
+    }
+    .chart-canvas-wrap {
+      position: relative;
+      height: 260px;
+      max-width: 520px;
+    }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
   <header>
@@ -216,6 +237,14 @@
     const base = window.location.origin;
     const chatHistory = [];
     let lastUserQuestion = "";
+    let chartCounter = 0;
+
+    const CHART_COLORS = [
+      "#19c37d", "#5436da", "#3b82f6", "#f59e0b", "#ef4444",
+      "#8b5cf6", "#14b8a6", "#ec4899", "#84cc16", "#06b6d4"
+    ];
+    const ID_COLS = new Set(["customerid", "rownumber", "id"]);
+    const PREFERRED_LABELS = ["geography", "gender", "surname"];
 
     function looksLikeJson(text) {
       if (!text) return false;
@@ -275,6 +304,155 @@
       if (value === null || value === undefined) return "";
       if (typeof value === "boolean") return value ? "Yes" : "No";
       return String(value);
+    }
+
+    function isNumericValue(value) {
+      if (value === null || value === undefined || typeof value === "boolean") return false;
+      if (typeof value === "number") return !Number.isNaN(value);
+      const n = Number(value);
+      return !Number.isNaN(n);
+    }
+
+    function getNumericColumns(row) {
+      return Object.keys(row).filter(key => {
+        if (ID_COLS.has(key.toLowerCase())) return false;
+        return isNumericValue(row[key]);
+      });
+    }
+
+    function getLabelColumn(row) {
+      const keys = Object.keys(row);
+      for (const pref of PREFERRED_LABELS) {
+        const found = keys.find(k => k.toLowerCase() === pref);
+        if (found) return found;
+      }
+      return keys.find(k => typeof row[k] === "string" && !ID_COLS.has(k.toLowerCase())) || null;
+    }
+
+    function resolveChartType(rows, chartType) {
+      if (!rows || rows.length === 0) return null;
+
+      if (chartType && chartType !== "table") return chartType;
+
+      if (rows.length === 1 && getNumericColumns(rows[0]).length >= 2) return "bar";
+      if (rows.length >= 2 && rows.length <= 25 && getLabelColumn(rows[0]) && getNumericColumns(rows[0]).length > 0) {
+        const label = getLabelColumn(rows[0]).toLowerCase();
+        if (rows.length <= 6 && (label === "gender" || label === "geography")) return "pie";
+        return "bar";
+      }
+
+      return null;
+    }
+
+    function buildChartSpec(rows, chartType) {
+      if (!rows || rows.length === 0) return null;
+
+      if (rows.length === 1) {
+        const nums = getNumericColumns(rows[0]);
+        if (nums.length < 2) return null;
+        return {
+          type: chartType === "pie" ? "pie" : "bar",
+          labels: nums.map(formatColumnLabel),
+          values: nums.map(c => Number(rows[0][c])),
+          datasetLabel: "Values"
+        };
+      }
+
+      const labelCol = getLabelColumn(rows[0]);
+      const nums = getNumericColumns(rows[0]);
+      if (!labelCol || nums.length === 0) return null;
+
+      const valueCol = nums[0];
+      const labels = rows.map(r => formatCellValue(r[labelCol]));
+      const values = rows.map(r => Number(r[valueCol]));
+
+      let type = chartType;
+      if (type === "pie" && labels.length > 8) type = "bar";
+      if (type === "line" && labels.length < 3) type = "bar";
+
+      return {
+        type: type === "pie" ? "pie" : (type === "line" ? "line" : "bar"),
+        labels,
+        values,
+        datasetLabel: formatColumnLabel(valueCol)
+      };
+    }
+
+    function renderChartCanvas(chartId) {
+      return `
+        <div class="chart-wrap">
+          <div class="chart-label">Chart</div>
+          <div class="chart-canvas-wrap">
+            <canvas id="${chartId}"></canvas>
+          </div>
+        </div>
+      `;
+    }
+
+    function mountChart(canvasId, spec) {
+      if (!spec || typeof Chart === "undefined") return;
+
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+
+      const colors = spec.labels.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]);
+
+      const commonOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            labels: { color: "#ececf1", font: { size: 11 } }
+          }
+        }
+      };
+
+      if (spec.type === "pie") {
+        new Chart(canvas, {
+          type: "pie",
+          data: {
+            labels: spec.labels,
+            datasets: [{
+              data: spec.values,
+              backgroundColor: colors,
+              borderColor: "#343541",
+              borderWidth: 1
+            }]
+          },
+          options: commonOptions
+        });
+        return;
+      }
+
+      const isLine = spec.type === "line";
+      new Chart(canvas, {
+        type: isLine ? "line" : "bar",
+        data: {
+          labels: spec.labels,
+          datasets: [{
+            label: spec.datasetLabel,
+            data: spec.values,
+            backgroundColor: isLine ? "rgba(25, 195, 125, 0.2)" : colors,
+            borderColor: isLine ? "#19c37d" : colors,
+            borderWidth: isLine ? 2 : 1,
+            fill: isLine,
+            tension: 0.25
+          }]
+        },
+        options: {
+          ...commonOptions,
+          scales: {
+            x: {
+              ticks: { color: "#acacbe", font: { size: 10 } },
+              grid: { color: "rgba(86, 88, 105, 0.35)" }
+            },
+            y: {
+              ticks: { color: "#acacbe", font: { size: 10 } },
+              grid: { color: "rgba(86, 88, 105, 0.35)" }
+            }
+          }
+        }
+      });
     }
 
     function renderDataView(rows) {
@@ -343,11 +521,19 @@
         ? renderConfirmButtons(options.candidates, options.originalQuestion)
         : "";
 
+      const resolvedChartType = options.needsConfirmation
+        ? null
+        : resolveChartType(rows, options.chartType);
+      const chartSpec = resolvedChartType ? buildChartSpec(rows, resolvedChartType) : null;
+      const chartId = chartSpec ? `chart-${++chartCounter}` : null;
+      const chartHtml = chartSpec ? renderChartCanvas(chartId) : "";
+
       row.innerHTML = `
         <div class="avatar">AI</div>
         <div class="bubble">
           <div>${escapeHtml(answer)}</div>
           ${confirmHtml}
+          ${chartHtml}
           ${tableHtml}
           ${sqlHtml}
         </div>
@@ -360,6 +546,7 @@
       });
 
       messages.appendChild(row);
+      if (chartSpec && chartId) mountChart(chartId, chartSpec);
       messages.scrollTop = messages.scrollHeight;
       chatHistory.push({ role: "assistant", content: answer });
     }
@@ -416,7 +603,8 @@
           addBotResponse(
             friendlyError(data),
             data.data || [],
-            data.query || ""
+            data.query || "",
+            { chartType: data.chart_type || "table" }
           );
           return;
         }
@@ -428,7 +616,8 @@
           {
             needsConfirmation: !!data.needs_confirmation,
             candidates: data.candidates || [],
-            originalQuestion: text
+            originalQuestion: text,
+            chartType: data.chart_type || "table"
           }
         );
       } catch (err) {
